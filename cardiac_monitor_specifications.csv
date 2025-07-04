@@ -1,0 +1,13 @@
+Component,Specification,Notes
+Heart Rate Accuracy,±2 BPM (60-100 BPM),Calibrated for adults
+SpO2 Accuracy,±2% (70-100%),Affected by motion
+Response Time,<3 seconds,Finger detection dependent
+Battery Life,8-12 hours,Varies with usage
+Display Resolution,320x240 pixels,2.8 inch TFT
+Web Interface,Responsive HTML5,Works on mobile/desktop
+Data Storage,4MB SPIFFS,Circular buffer
+WiFi Range,50-100 meters,Depends on environment
+Alert Response,<1 second,Audio and visual
+Power Consumption,150-300mA,Display brightness dependent
+Operating Temperature,0-40°C,Sensor limitations
+Dimensions,10x6x3 cm,Enclosure dependent

@@ -1,0 +1,19 @@
+{
+  "heartRateThreshold": 100,
+  "spO2Threshold": 95,
+  "batteryThreshold": 20,
+  "alertEnabled": true,
+  "buzzerEnabled": true,
+  "wifiSSID": "YOUR_WIFI_SSID",
+  "wifiPassword": "YOUR_WIFI_PASSWORD",
+  "displayBrightness": 80,
+  "autoSleep": true,
+  "sleepTimeout": 300000,
+  "logInterval": 5000,
+  "touchCalibration": {
+    "x1": 200,
+    "x2": 3700,
+    "y1": 200,
+    "y2": 3700
+  }
+}

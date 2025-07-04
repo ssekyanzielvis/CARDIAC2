@@ -1,0 +1,96 @@
+
+ESP32 Cardiac Monitor - Project Structure
+========================================
+
+esp32-cardiac-monitor/
+├── platformio.ini              # PlatformIO configuration
+├── README.md                   # Project documentation
+├── LICENSE                     # License file
+├── .gitignore                  # Git ignore rules
+│
+├── src/                        # Source code
+│   ├── main.cpp               # Main application entry point
+│   ├── cardiac_monitor.h      # Main header file
+│   ├── sensor_manager.cpp     # Sensor handling
+│   ├── display_manager.cpp    # Display control
+│   ├── web_server.cpp         # Web server implementation
+│   ├── data_logger.cpp        # Data logging functionality
+│   ├── alert_manager.cpp      # Alert system
+│   ├── config_manager.cpp     # Configuration management
+│   └── utils.cpp              # Utility functions
+│
+├── include/                    # Header files
+│   ├── sensor_manager.h
+│   ├── display_manager.h
+│   ├── web_server.h
+│   ├── data_logger.h
+│   ├── alert_manager.h
+│   ├── config_manager.h
+│   └── utils.h
+│
+├── lib/                        # Custom libraries
+│   └── HeartRateLib/          # Custom heart rate library
+│       ├── HeartRateLib.h
+│       └── HeartRateLib.cpp
+│
+├── data/                       # SPIFFS filesystem data
+│   ├── index.html             # Main web interface
+│   ├── style.css              # Stylesheet
+│   ├── script.js              # JavaScript application
+│   ├── config.json            # Default configuration
+│   └── manifest.json          # PWA manifest
+│
+├── test/                       # Unit tests
+│   ├── test_sensor.cpp
+│   ├── test_display.cpp
+│   └── test_web_server.cpp
+│
+├── docs/                       # Documentation
+│   ├── architecture/          # Architecture diagrams
+│   ├── api/                   # API documentation
+│   ├── hardware/              # Hardware specifications
+│   └── user_guide/            # User documentation
+│
+├── tools/                      # Development tools
+│   ├── generate_architecture.py
+│   ├── data_analyzer.py
+│   └── test_simulator.py
+│
+└── examples/                   # Example configurations
+    ├── basic_config.json
+    ├── hospital_config.json
+    └── home_config.json
+
+File Descriptions:
+==================
+
+Core Application Files:
+- main.cpp: Application entry point, setup and main loop
+- cardiac_monitor.h: Main application header with constants
+- sensor_manager.cpp: MAX30102 sensor interface and data processing
+- display_manager.cpp: ILI9341 display control and UI rendering
+- web_server.cpp: HTTP/WebSocket server implementation
+- data_logger.cpp: Data storage and retrieval using SPIFFS
+- alert_manager.cpp: Alert logic and buzzer control
+- config_manager.cpp: Configuration loading and saving
+
+Web Interface Files:
+- index.html: Responsive web dashboard
+- style.css: Modern CSS styling with animations
+- script.js: Real-time data visualization with Chart.js
+- manifest.json: Progressive Web App configuration
+
+Configuration Files:
+- platformio.ini: Build configuration and library dependencies
+- config.json: Runtime configuration (WiFi, thresholds, etc.)
+
+Documentation:
+- README.md: Project overview and quick start guide
+- API documentation: REST and WebSocket API reference
+- User guide: End-user operation manual
+- Hardware guide: Wiring and assembly instructions
+
+Development Tools:
+- generate_architecture.py: This architecture generator
+- data_analyzer.py: Historical data analysis tools
+- test_simulator.py: Sensor data simulation for testing

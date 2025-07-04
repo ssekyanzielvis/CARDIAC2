@@ -1,0 +1,67 @@
+ESP32 Cardiac Monitor - Deployment Guide
+==================================================
+
+Last Updated: 04:36 PM EAT, Jul 03, 2025
+
+Hardware Setup:
+--------------
+1. Connect MAX30102 sensor to ESP32 I2C pins (SDA=21, SCL=22)
+
+2. Connect ILI9341 display to ESP32 SPI pins
+
+3. Connect buzzer to GPIO pin 27
+
+4. Connect battery monitor to ADC pin 35
+
+5. Assemble components in enclosure
+
+Software Installation:
+---------------------
+1. Install PlatformIO IDE
+
+2. Clone project repository
+
+3. Configure WiFi credentials in data/config.json
+
+4. Build and upload firmware to ESP32
+
+5. Upload SPIFFS filesystem with web files
+
+6. Verify serial output for successful boot
+
+Network Configuration:
+---------------------
+1. Connect ESP32 to WiFi network
+
+2. Note assigned IP address from serial monitor
+
+3. Configure router for static IP (optional)
+
+4. Enable mDNS for cardiac-monitor.local access
+
+5. Test web interface connectivity
+
+Calibration & Testing:
+---------------------
+1. Place finger on sensor for initial readings
+
+2. Verify heart rate and SpO2 accuracy
+
+3. Test alert thresholds and buzzer
+
+4. Calibrate display touch sensitivity
+
+5. Perform data logging and export tests
+
+Production Deployment:
+---------------------
+1. Set secure WiFi credentials
+
+2. Configure appropriate alert thresholds
+
+3. Enable data logging and retention policies
+
+4. Set up backup and recovery procedures
+
+5. Document system configuration and contacts
+
