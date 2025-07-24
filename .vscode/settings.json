@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "spo2_algorithm.h": "c",
+        "ESP32.C": "cpp"
+    }
+}

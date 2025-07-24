@@ -1,56 +1,58 @@
 /*
- * Cardiac Monitor for Arduino Uno
- * A simplified cardiac monitoring system with heart rate, SpO2 monitoring,
- * and TFT display interface, adapted for Arduino Uno's limited resources.
+ * Cardiac Monitor for Arduino Uno - Complete System
+ * A comprehensive cardiac monitoring system with heart rate, SpO2 monitoring,
+ * and display interface.
  * 
  * Hardware Requirements:
  * - Arduino Uno
- * - MAX30102 Heart Rate/SpO2 Sensor (I2C: SDA=A4, SCL=A5)
- * - ILI9341 3.2" TFT Display (SPI: CS=10, DC=9, MOSI=11, CLK=13, RST=8)
- * - Buzzer (pin 7)
- * - Battery Monitor (A0)
- * - Two push buttons (pins 2, 3) for navigation
+ * - MAX30102 Heart Rate/SpO2 Sensor
+ * - ILI9341 2.4" TFT Display with Touch (SPI)
+ * - XPT2046 Touch Controller
+ * - Buzzer
  * 
  * WARNING: This is for educational purposes only. Not for medical use.
  */
 
-#include <EEPROM.h>
+#include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
+#include <XPT2046_Touchscreen.h>
 #include "MAX30105.h"
 #include "heartRate.h"
 #include "spo2_algorithm.h"
 
 // ==================== PIN DEFINITIONS ====================
-#define TFT_CS    10
-#define TFT_DC    9
-#define TFT_MOSI  11
-#define TFT_CLK   13
-#define TFT_RST   8
+#define TFT_CS   10
+#define TFT_DC   9
+#define TFT_RST  8
 
-#define BUZZER_PIN 7
+#define TOUCH_CS  7
+#define TOUCH_IRQ 255  // Not used
+
+#define SDA_PIN   A4
+#define SCL_PIN   A5
+
 #define BATTERY_PIN A0
-#define BUTTON_1 2
-#define BUTTON_2 3
+#define BUZZER_PIN  6
 
 // ==================== CONFIGURATION ====================
-#define FIRMWARE_VERSION "2.0.0"
+#define FIRMWARE_VERSION "1.0.0"
 #define DEVICE_NAME "CardiacMonitor"
-#define SENSOR_UPDATE_INTERVAL 200  // ms
-#define DISPLAY_UPDATE_INTERVAL 200 // ms
-#define DATA_LOG_INTERVAL 2000     // ms
+#define SENSOR_UPDATE_INTERVAL 100  // ms
+#define DISPLAY_UPDATE_INTERVAL 100 // ms
+#define DATA_LOG_INTERVAL 1000      // ms
 
-#define SAMPLE_RATE 50
-#define BUFFER_SIZE 50
+#define SAMPLE_RATE 100
+#define BUFFER_SIZE 100  // Reduced for Uno memory
 #define FINGER_THRESHOLD 50000
 #define SPO2_BUFFER_SIZE 50
 
-#define MAX_ALERTS 5
-#define MAX_HISTORY 10
-#define DATA_BUFFER_SIZE 20
-#define MAX_STRING 32
+#define MAX_ALERTS 5    // Reduced for Uno memory
+#define MAX_HISTORY 20  // Reduced for Uno memory
+#define DATA_BUFFER_SIZE 50  // Reduced for Uno memory
+#define MAX_STRING 64   // Reduced for Uno memory
 
 // ==================== DATA STRUCTURES ====================
 typedef struct {
@@ -85,13 +87,15 @@ typedef struct {
 #define SYSTEM_STATE_SETTINGS 2
 #define SYSTEM_STATE_HISTORY 3
 #define SYSTEM_STATE_ERROR 4
+#define SYSTEM_STATE_SLEEP 5
 
 #define SCREEN_TYPE_MAIN 0
 #define SCREEN_TYPE_SETTINGS 1
 #define SCREEN_TYPE_HISTORY 2
 
 // ==================== GLOBAL OBJECTS ====================
-Adafruit_ILI9341 tft = {TFT_CS, TFT_DC, TFT_MOSI, TFT_CLK, TFT_RST, -1};
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
+XPT2046_Touchscreen ts = XPT2046_Touchscreen(TOUCH_CS);
 MAX30105 particleSensor;
 
 // ==================== GLOBAL VARIABLES ====================
@@ -117,7 +121,7 @@ bool fingerDetected = false;
 
 int screenBrightness = 128;
 bool displayOn = true;
-unsigned long lastButtonPress = 0;
+unsigned long lastTouchTime = 0;
 const unsigned long SCREEN_TIMEOUT = 30000;
 
 Alert activeAlerts[MAX_ALERTS];
@@ -138,16 +142,21 @@ int dataBufferCount = 0;
 #define COLOR_BLUE      0x001F
 #define COLOR_YELLOW    0xFFE0
 #define COLOR_ORANGE    0xFD20
+#define COLOR_PURPLE    0x780F
 #define COLOR_GRAY      0x7BEF
+#define COLOR_DARKGRAY  0x39E7
 
-// EEPROM addresses
-#define EEPROM_HR_MIN 0
-#define EEPROM_HR_MAX 4
-#define EEPROM_SPO2_MIN 8
-#define EEPROM_BAT_MIN 12
-#define EEPROM_ALERTS_EN 16
-#define EEPROM_BRIGHTNESS 17
-#define EEPROM_DATA_START 20
+// Simulated preferences for Uno
+typedef struct {
+    float hr_min;
+    float hr_max;
+    float spo2_min;
+    float bat_min;
+    bool alerts_en;
+    int brightness;
+} Preferences;
+
+Preferences preferences;
 
 // ==================== FUNCTION PROTOTYPES ====================
 void setup(void);
@@ -159,6 +168,7 @@ void drawStatusBar(void);
 void drawVitalSignsLayout(void);
 void drawMainButtons(void);
 void updateVitalSigns(void);
+void drawWaveform(void);
 void showError(const char* title, const char* message);
 void showSettingsScreen(void);
 void showHistoryScreen(void);
@@ -166,15 +176,13 @@ void drawHeart(int x, int y, uint16_t color);
 bool initializeSensor(void);
 void updateSensors(void);
 float readBatteryLevel(void);
-void handleButtons(void);
-void handleMainScreenButtons(void);
-void handleSettingsScreenButtons(void);
-void handleHistoryScreenButtons(void);
+void handleTouch(void);
+void handleTouchEvent(int x, int y);
+void handleMainScreenTouch(int x, int y);
+void handleSettingsScreenTouch(int x, int y);
+void handleHistoryScreenTouch(int x, int y);
 void handleScreenTimeout(void);
 void logData(void);
-void saveDataToEEPROM(void);
-void loadDataFromEEPROM(void);
-void clearData(void);
 void checkAlerts(void);
 void triggerAlert(int level, const char* message);
 void playAlertSound(int level);
@@ -187,7 +195,6 @@ void formatTime(unsigned long timestamp, char* output);
 void printSystemInfo(void);
 void performSelfTest(void);
 void handleSerialCommands(void);
-void watchdogFeed(void);
 void handleLowPowerMode(void);
 void checkMemoryUsage(void);
 void initializeSystem(void);
@@ -195,20 +202,18 @@ void handleSystemError(const char* errorMessage);
 
 // ==================== SETUP FUNCTION ====================
 void setup() {
-    Serial_begin(9600);
-    printf("\n=== Cardiac Monitor v2.0 (Arduino Uno) ===\n");
-    printf("Initializing system...\n");
+    Serial.begin(115200);
+    Serial.println("\n=== Cardiac Monitor v1.0 ===");
+    Serial.println("Initializing system...");
     
     pinMode(BUZZER_PIN, OUTPUT);
     pinMode(BATTERY_PIN, INPUT);
-    pinMode(BUTTON_1, INPUT_PULLUP);
-    pinMode(BUTTON_2, INPUT_PULLUP);
     digitalWrite(BUZZER_PIN, LOW);
     
     loadSettings();
     
     if (!initializeDisplay()) {
-        printf("FATAL: Display initialization failed\n");
+        Serial.println("FATAL: Display initialization failed");
         while (true) delay(1000);
     }
     
@@ -220,21 +225,19 @@ void setup() {
         delay(5000);
     }
     
-    loadDataFromEEPROM();
-    
     currentState = SYSTEM_STATE_RUNNING;
     currentScreen = SCREEN_TYPE_MAIN;
     showMainScreen();
     
-    printf("System initialization complete\n");
-    printf("=================================\n");
+    Serial.println("System initialization complete");
+    Serial.println("=================================");
 }
 
 // ==================== MAIN LOOP ====================
 void loop() {
     unsigned long currentTime = millis();
     
-    handleButtons();
+    handleTouch();
     
     if (currentTime - lastSensorUpdate >= SENSOR_UPDATE_INTERVAL) {
         lastSensorUpdate = currentTime;
@@ -259,7 +262,6 @@ void loop() {
     handleScreenTimeout();
     
     handleSerialCommands();
-    watchdogFeed();
     checkMemoryUsage();
     handleLowPowerMode();
     
@@ -268,49 +270,58 @@ void loop() {
 
 // ==================== DISPLAY FUNCTIONS ====================
 bool initializeDisplay() {
-    printf("Initializing display...\n");
+    Serial.println("Initializing display...");
     
-    Adafruit_ILI9341_begin(&tft);
-    Adafruit_ILI9341_setRotation(&tft, 1);
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
+    tft.begin();
+    tft.setRotation(1);
+    tft.fillScreen(COLOR_BLACK);
     
-    printf("Display initialized successfully\n");
+    if (!ts.begin()) {
+        Serial.println("Touch screen initialization failed");
+        return false;
+    }
+    
+    ts.setRotation(1);
+    
+    Serial.println("Display initialized successfully");
     return true;
 }
 
 void showSplashScreen() {
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 2);
+    tft.fillScreen(COLOR_BLACK);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(3);
     
     int16_t x1, y1;
     uint16_t w, h;
-    Adafruit_ILI9341_getTextBounds(&tft, "Cardiac Monitor", 0, 0, &x1, &y1, &w, &h);
-    Adafruit_ILI9341_setCursor(&tft, (320 - w) / 2, 80);
-    Adafruit_ILI9341_println(&tft, "Cardiac Monitor");
+    tft.getTextBounds("Cardiac Monitor", 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor((240 - w) / 2, 60);
+    tft.println("Cardiac Monitor");
     
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_getTextBounds(&tft, "v2.0", 0, 0, &x1, &y1, &w, &h);
-    Adafruit_ILI9341_setCursor(&tft, (320 - w) / 2, 120);
-    Adafruit_ILI9341_println(&tft, "v2.0");
+    tft.setTextSize(2);
+    tft.getTextBounds("v1.0", 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor((240 - w) / 2, 100);
+    tft.println("v1.0");
     
-    drawHeart(160, 160, COLOR_RED);
+    drawHeart(120, 140, COLOR_RED);
     
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_GRAY);
-    Adafruit_ILI9341_setCursor(&tft, 10, 220);
-    Adafruit_ILI9341_println(&tft, "Educational use only");
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_GRAY);
+    tft.setCursor(10, 200);
+    tft.println("For Professional use only");
+    tft.setCursor(30, 215);
+    tft.println("Used for medical diagnosis");
 }
 
 void showMainScreen() {
     currentScreen = SCREEN_TYPE_MAIN;
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
+    tft.fillScreen(COLOR_BLACK);
     
-    Adafruit_ILI9341_fillRect(&tft, 0, 0, 320, 30, COLOR_BLUE);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 2);
-    Adafruit_ILI9341_setCursor(&tft, 10, 8);
-    Adafruit_ILI9341_println(&tft, "Cardiac Monitor");
+    tft.fillRect(0, 0, 240, 30, COLOR_BLUE);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(10, 8);
+    tft.println("Cardiac Monitor");
     
     drawStatusBar();
     drawVitalSignsLayout();
@@ -318,149 +329,190 @@ void showMainScreen() {
 }
 
 void drawStatusBar() {
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setCursor(180, 10);
+    
     float batteryLevel = readBatteryLevel();
     uint16_t batteryColor = batteryLevel > 20 ? COLOR_GREEN : COLOR_RED;
-    Adafruit_ILI9341_setTextColor(&tft, batteryColor);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setCursor(&tft, 280, 10);
+    tft.setTextColor(batteryColor);
+    tft.setCursor(200, 20);
     char buf[16];
     snprintf(buf, sizeof(buf), "%d%%", (int)batteryLevel);
-    Adafruit_ILI9341_println(&tft, buf);
+    tft.println(buf);
 }
 
 void drawVitalSignsLayout() {
-    Adafruit_ILI9341_drawRect(&tft, 10, 40, 140, 80, COLOR_WHITE);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setCursor(&tft, 15, 45);
-    Adafruit_ILI9341_println(&tft, "Heart Rate (BPM)");
+    tft.drawRect(10, 40, 100, 80, COLOR_WHITE);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(15, 45);
+    tft.println("Heart Rate");
+    tft.setCursor(30, 55);
+    tft.println("(BPM)");
     
-    Adafruit_ILI9341_drawRect(&tft, 170, 40, 140, 80, COLOR_WHITE);
-    Adafruit_ILI9341_setCursor(&tft, 175, 45);
-    Adafruit_ILI9341_println(&tft, "SpO2 (%)");
+    tft.drawRect(130, 40, 100, 80, COLOR_WHITE);
+    tft.setCursor(150, 45);
+    tft.println("SpO2 (%)");
+    
+    tft.drawRect(10, 130, 220, 60, COLOR_WHITE);
+    tft.setCursor(15, 135);
+    tft.println("Waveform");
 }
 
 void drawMainButtons() {
-    Adafruit_ILI9341_fillRect(&tft, 10, 200, 90, 30, COLOR_GRAY);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setCursor(&tft, 35, 212);
-    Adafruit_ILI9341_println(&tft, "Settings (Btn 1)");
+    tft.fillRect(10, 200, 60, 30, COLOR_GRAY);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(20, 212);
+    tft.println("Settings");
     
-    Adafruit_ILI9341_fillRect(&tft, 115, 200, 90, 30, COLOR_GRAY);
-    Adafruit_ILI9341_setCursor(&tft, 145, 212);
-    Adafruit_ILI9341_println(&tft, "History (Btn 2)");
+    tft.fillRect(90, 200, 60, 30, COLOR_GRAY);
+    tft.setCursor(100, 212);
+    tft.println("History");
+    
+    tft.fillRect(170, 200, 60, 30, COLOR_GRAY);
+    tft.setCursor(180, 212);
+    tft.println("Info");
 }
 
 void updateVitalSigns() {
-    Adafruit_ILI9341_fillRect(&tft, 15, 55, 130, 60, COLOR_BLACK);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_RED);
-    Adafruit_ILI9341_setTextSize(&tft, 3);
-    Adafruit_ILI9341_setCursor(&tft, 20, 70);
+    tft.fillRect(15, 60, 90, 50, COLOR_BLACK);
+    tft.setTextColor(COLOR_RED);
+    tft.setTextSize(3);
+    tft.setCursor(20, 70);
     char buf[16];
     if (currentVitals.isFingerDetected && currentVitals.heartRate > 0) {
         snprintf(buf, sizeof(buf), "%d", (int)currentVitals.heartRate);
     } else {
         strcpy(buf, "--");
     }
-    Adafruit_ILI9341_print(&tft, buf);
+    tft.print(buf);
     
-    Adafruit_ILI9341_fillRect(&tft, 175, 55, 130, 60, COLOR_BLACK);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_BLUE);
-    Adafruit_ILI9341_setCursor(&tft, 180, 70);
+    tft.fillRect(135, 60, 90, 50, COLOR_BLACK);
+    tft.setTextColor(COLOR_BLUE);
+    tft.setCursor(140, 70);
     if (currentVitals.isFingerDetected && currentVitals.spO2 > 0) {
         snprintf(buf, sizeof(buf), "%d", (int)currentVitals.spO2);
     } else {
         strcpy(buf, "--");
     }
-    Adafruit_ILI9341_print(&tft, buf);
+    tft.print(buf);
     
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setTextColor(&tft, currentVitals.isFingerDetected ? COLOR_GREEN : COLOR_RED);
-    Adafruit_ILI9341_setCursor(&tft, 15, 105);
-    Adafruit_ILI9341_fillRect(&tft, 15, 105, 100, 10, COLOR_BLACK);
-    Adafruit_ILI9341_println(&tft, currentVitals.isFingerDetected ? "Finger detected" : "Place finger");
+    tft.setTextSize(1);
+    tft.setTextColor(currentVitals.isFingerDetected ? COLOR_GREEN : COLOR_RED);
+    tft.setCursor(15, 105);
+    tft.fillRect(15, 105, 100, 10, COLOR_BLACK);
+    tft.println(currentVitals.isFingerDetected ? "Finger detected" : "Place finger");
+}
+
+void drawWaveform() {
+    static int waveformX = 15;
+    static int lastY = 160;
+    
+    tft.drawPixel(waveformX, lastY, COLOR_BLACK);
+    
+    if (currentVitals.isFingerDetected) {
+        int waveY = 160 + (int)(sin(millis() * 0.01) * 20);
+        tft.drawPixel(waveformX, waveY, COLOR_GREEN);
+        lastY = waveY;
+    }
+    
+    waveformX++;
+    if (waveformX > 225) {
+        waveformX = 15;
+        tft.fillRect(15, 140, 210, 45, COLOR_BLACK);
+    }
 }
 
 void showError(const char* title, const char* message) {
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_RED);
-    Adafruit_ILI9341_setTextSize(&tft, 2);
+    tft.fillScreen(COLOR_BLACK);
+    tft.setTextColor(COLOR_RED);
+    tft.setTextSize(2);
     
     int16_t x1, y1;
     uint16_t w, h;
-    Adafruit_ILI9341_getTextBounds(&tft, title, 0, 0, &x1, &y1, &w, &h);
-    Adafruit_ILI9341_setCursor(&tft, (320 - w) / 2, 80);
-    Adafruit_ILI9341_println(&tft, title);
+    tft.getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor((240 - w) / 2, 60);
+    tft.println(title);
     
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setCursor(&tft, 10, 120);
-    Adafruit_ILI9341_println(&tft, message);
+    tft.setTextSize(1);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setCursor(10, 100);
+    tft.println(message);
 }
 
 void showSettingsScreen() {
     currentScreen = SCREEN_TYPE_SETTINGS;
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
+    tft.fillScreen(COLOR_BLACK);
     
-    Adafruit_ILI9341_fillRect(&tft, 0, 0, 320, 30, COLOR_BLUE);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 2);
-    Adafruit_ILI9341_setCursor(&tft, 10, 8);
-    Adafruit_ILI9341_println(&tft, "Settings");
+    tft.fillRect(0, 0, 240, 30, COLOR_BLUE);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(10, 8);
+    tft.println("Settings");
     
-    Adafruit_ILI9341_fillRect(&tft, 250, 5, 60, 20, COLOR_GRAY);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setCursor(&tft, 270, 10);
-    Adafruit_ILI9341_println(&tft, "Back (Btn 1)");
+    tft.fillRect(200, 5, 40, 20, COLOR_GRAY);
+    tft.setTextSize(1);
+    tft.setCursor(210, 10);
+    tft.println("Back");
     
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(1);
     
-    Adafruit_ILI9341_setCursor(&tft, 10, 50);
-    Adafruit_ILI9341_println(&tft, "Alert Thresholds:");
+    tft.setCursor(10, 50);
+    tft.println("Alert Thresholds:");
     
     char buf[32];
-    Adafruit_ILI9341_setCursor(&tft, 20, 70);
-    snprintf(buf, sizeof(buf), "Heart Rate: %d - %d BPM", 
+    tft.setCursor(20, 70);
+    snprintf(buf, sizeof(buf), "HR: %d - %d BPM", 
              (int)alertThresholds.heartRateMin, (int)alertThresholds.heartRateMax);
-    Adafruit_ILI9341_println(&tft, buf);
+    tft.println(buf);
     
-    Adafruit_ILI9341_setCursor(&tft, 20, 90);
+    tft.setCursor(20, 90);
     snprintf(buf, sizeof(buf), "SpO2 Min: %d%%", (int)alertThresholds.spO2Min);
-    Adafruit_ILI9341_println(&tft, buf);
+    tft.println(buf);
     
-    Adafruit_ILI9341_setCursor(&tft, 20, 110);
+    tft.setCursor(20, 110);
     snprintf(buf, sizeof(buf), "Battery Min: %d%%", (int)alertThresholds.batteryMin);
-    Adafruit_ILI9341_println(&tft, buf);
+    tft.println(buf);
     
-    Adafruit_ILI9341_setCursor(&tft, 10, 140);
+    tft.setCursor(10, 140);
     snprintf(buf, sizeof(buf), "Brightness: %d", screenBrightness);
-    Adafruit_ILI9341_println(&tft, buf);
+    tft.println(buf);
+    
+    tft.fillRect(10, 170, 100, 30, COLOR_GREEN);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setCursor(20, 182);
+    tft.println("Export");
+    
+    tft.fillRect(130, 170, 100, 30, COLOR_RED);
+    tft.setCursor(150, 182);
+    tft.println("Clear");
 }
 
 void showHistoryScreen() {
     currentScreen = SCREEN_TYPE_HISTORY;
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
+    tft.fillScreen(COLOR_BLACK);
     
-    Adafruit_ILI9341_fillRect(&tft, 0, 0, 320, 30, COLOR_BLUE);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 2);
-    Adafruit_ILI9341_setCursor(&tft, 10, 8);
-    Adafruit_ILI9341_println(&tft, "Data History");
+    tft.fillRect(0, 0, 240, 30, COLOR_BLUE);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(10, 8);
+    tft.println("Data History");
     
-    Adafruit_ILI9341_fillRect(&tft, 250, 5, 60, 20, COLOR_GRAY);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setCursor(&tft, 270, 10);
-    Adafruit_ILI9341_println(&tft, "Back (Btn 1)");
+    tft.fillRect(200, 5, 40, 20, COLOR_GRAY);
+    tft.setTextSize(1);
+    tft.setCursor(210, 10);
+    tft.println("Back");
     
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setCursor(&tft, 10, 40);
-    Adafruit_ILI9341_println(&tft, "Recent Readings:");
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(10, 40);
+    tft.println("Recent Readings:");
     
     int y = 60;
-    int count = dataBufferCount < 8 ? dataBufferCount : 8;
+    int count = dataBufferCount < 6 ? dataBufferCount : 6;
     
     for (int i = dataBufferCount - count; i < dataBufferCount && y < 200; i++) {
         if (i >= 0) {
@@ -468,42 +520,54 @@ void showHistoryScreen() {
             char timeStr[16];
             formatTime(data->timestamp, timeStr);
             char buf[64];
-            snprintf(buf, sizeof(buf), "%s HR:%d SpO2:%d", 
-                     timeStr, (int)data->heartRate, (int)data->spO2);
-            Adafruit_ILI9341_setCursor(&tft, 10, y);
-            Adafruit_ILI9341_println(&tft, buf);
+            snprintf(buf, sizeof(buf), "%s HR:%d", timeStr, (int)data->heartRate);
+            tft.setCursor(10, y);
+            tft.println(buf);
+            y += 15;
+            
+            snprintf(buf, sizeof(buf), "SpO2:%d Bat:%d%%", (int)data->spO2, (int)data->batteryLevel);
+            tft.setCursor(10, y);
+            tft.println(buf);
             y += 15;
         }
     }
     
     if (dataBufferCount == 0) {
-        Adafruit_ILI9341_setCursor(&tft, 10, 60);
-        Adafruit_ILI9341_println(&tft, "No data available");
+        tft.setCursor(10, 60);
+        tft.println("No data available");
     }
 }
 
 void drawHeart(int x, int y, uint16_t color) {
-    Adafruit_ILI9341_fillCircle(&tft, x - 8, y - 5, 8, color);
-    Adafruit_ILI9341_fillCircle(&tft, x + 8, y - 5, 8, color);
-    Adafruit_ILI9341_fillTriangle(&tft, x - 15, y, x + 15, y, x, y + 15, color);
+    tft.fillCircle(x - 8, y - 5, 8, color);
+    tft.fillCircle(x + 8, y - 5, 8, color);
+    tft.fillTriangle(x - 15, y, x + 15, y, x, y + 15, color);
 }
 
 // ==================== SENSOR FUNCTIONS ====================
 bool initializeSensor() {
-    printf("Initializing MAX30102 sensor...\n");
+    Serial.println("Initializing MAX30102 sensor...");
     
-    Wire_begin();
+    Wire.begin();
     
-    if (!MAX30105_begin(&particleSensor)) {
-        printf("MAX30102 not found\n");
+    if (!particleSensor.begin()) {
+        Serial.println("MAX30102 not found");
         return false;
     }
     
-    MAX30105_setup(&particleSensor);
-    MAX30105_setPulseAmplitudeRed(&particleSensor, 0x0A);
-    MAX30105_setPulseAmplitudeGreen(&particleSensor, 0);
+    // Setup with default settings
+    byte ledBrightness = 0x1F; // Options: 0=Off to 255=50mA
+    byte sampleAverage = 4; // Options: 1, 2, 4, 8, 16, 32
+    byte ledMode = 2; // Options: 1 = Red only, 2 = Red + IR
+    int sampleRate = 100; // Options: 50, 100, 200, 400, 800, 1000, 1600, 3200
+    int pulseWidth = 411; // Options: 69, 118, 215, 411
+    int adcRange = 4096; // Options: 2048, 4096, 8192, 16384
     
-    printf("MAX30102 initialized successfully\n");
+    particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange);
+    particleSensor.setPulseAmplitudeRed(0x0A);
+    particleSensor.setPulseAmplitudeGreen(0);
+    
+    Serial.println("MAX30102 initialized successfully");
     return true;
 }
 
@@ -511,9 +575,9 @@ void updateSensors() {
     currentVitals.batteryLevel = readBatteryLevel();
     currentVitals.timestamp = millis();
     
-    if (MAX30105_available(&particleSensor)) {
-        redBuffer[bufferIndex] = MAX30105_getRed(&particleSensor);
-        irBuffer[bufferIndex] = MAX30105_getIR(&particleSensor);
+    if (particleSensor.available()) {
+        redBuffer[bufferIndex] = particleSensor.getRed();
+        irBuffer[bufferIndex] = particleSensor.getIR();
         
         fingerDetected = (irBuffer[bufferIndex] > FINGER_THRESHOLD);
         currentVitals.isFingerDetected = fingerDetected;
@@ -542,7 +606,7 @@ void updateSensors() {
             }
         }
         
-        MAX30105_nextSample(&particleSensor);
+        particleSensor.nextSample();
     }
 }
 
@@ -553,48 +617,76 @@ float readBatteryLevel() {
     return percentage < 0 ? 0 : (percentage > 100 ? 100 : percentage);
 }
 
-// ==================== BUTTON HANDLING ====================
-void handleButtons() {
-    static unsigned long lastDebounceTime = 0;
-    const unsigned long debounceDelay = 200;
-    
-    if (millis() - lastDebounceTime < debounceDelay) return;
-    
-    if (digitalRead(BUTTON_1) == LOW) {
-        lastButtonPress = millis();
+// ==================== TOUCH HANDLING ====================
+void handleTouch() {
+    if (ts.touched()) {
+        TS_Point p = ts.getPoint();
+        
+        // Map touch coordinates to screen coordinates
+        int x = map(p.x, 200, 3700, 0, 240);
+        int y = map(p.y, 240, 3800, 0, 320);
+        
+        lastTouchTime = millis();
+        
         if (!displayOn) {
             displayOn = true;
             return;
         }
-        switch (currentScreen) {
-            case SCREEN_TYPE_MAIN:
-            case SCREEN_TYPE_HISTORY:
-                showSettingsScreen();
-                break;
-            case SCREEN_TYPE_SETTINGS:
-                showMainScreen();
-                break;
-        }
-        lastDebounceTime = millis();
+        
+        handleTouchEvent(x, y);
+        
+        delay(200);
     }
-    
-    if (digitalRead(BUTTON_2) == LOW) {
-        lastButtonPress = millis();
-        if (!displayOn) {
-            displayOn = true;
-            return;
-        }
-        if (currentScreen == SCREEN_TYPE_MAIN) {
-            showHistoryScreen();
-        }
-        lastDebounceTime = millis();
+}
+
+void handleTouchEvent(int x, int y) {
+    switch (currentScreen) {
+        case SCREEN_TYPE_MAIN:
+            handleMainScreenTouch(x, y);
+            break;
+        case SCREEN_TYPE_SETTINGS:
+            handleSettingsScreenTouch(x, y);
+            break;
+        case SCREEN_TYPE_HISTORY:
+            handleHistoryScreenTouch(x, y);
+            break;
+    }
+}
+
+void handleMainScreenTouch(int x, int y) {
+    if (x >= 10 && x <= 70 && y >= 200 && y <= 230) {
+        showSettingsScreen();
+    }
+    else if (x >= 90 && x <= 150 && y >= 200 && y <= 230) {
+        showHistoryScreen();
+    }
+    else if (x >= 170 && x <= 230 && y >= 200 && y <= 230) {
+        printSystemInfo();
+    }
+}
+
+void handleSettingsScreenTouch(int x, int y) {
+    if (x >= 200 && x <= 240 && y >= 5 && y <= 25) {
+        showMainScreen();
+    }
+    else if (x >= 10 && x <= 110 && y >= 170 && y <= 200) {
+        exportData();
+    }
+    else if (x >= 130 && x <= 230 && y >= 170 && y <= 200) {
+        clearData();
+    }
+}
+
+void handleHistoryScreenTouch(int x, int y) {
+    if (x >= 200 && x <= 240 && y >= 5 && y <= 25) {
+        showMainScreen();
     }
 }
 
 void handleScreenTimeout() {
-    if (displayOn && (millis() - lastButtonPress > SCREEN_TIMEOUT)) {
+    if (displayOn && (millis() - lastTouchTime > SCREEN_TIMEOUT)) {
         displayOn = false;
-        Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
+        tft.fillScreen(COLOR_BLACK);
     }
 }
 
@@ -607,60 +699,7 @@ void logData() {
             memmove(dataBuffer, dataBuffer + 1, (DATA_BUFFER_SIZE - 1) * sizeof(VitalSigns));
             dataBuffer[DATA_BUFFER_SIZE - 1] = currentVitals;
         }
-        
-        static int saveCounter = 0;
-        saveCounter++;
-        if (saveCounter >= 5) {
-            saveCounter = 0;
-            saveDataToEEPROM();
-        }
     }
-}
-
-void saveDataToEEPROM() {
-    int addr = EEPROM_DATA_START;
-    EEPROM_write(addr, dataBufferCount);
-    addr++;
-    
-    for (int i = 0; i < dataBufferCount && addr < EEPROM.length() - 12; i++) {
-        EEPROM_writeFloat(addr, dataBuffer[i].heartRate); addr += 4;
-        EEPROM_writeFloat(addr, dataBuffer[i].spO2); addr += 4;
-        EEPROM_writeFloat(addr, dataBuffer[i].batteryLevel); addr += 4;
-    }
-    
-    EEPROM_commit();
-    printf("Data saved to EEPROM\n");
-}
-
-void loadDataFromEEPROM() {
-    dataBufferCount = EEPROM_read(EEPROM_DATA_START);
-    if (dataBufferCount > DATA_BUFFER_SIZE) dataBufferCount = DATA_BUFFER_SIZE;
-    
-    int addr = EEPROM_DATA_START + 1;
-    for (int i = 0; i < dataBufferCount && addr < EEPROM.length() - 12; i++) {
-        dataBuffer[i].heartRate = EEPROM_readFloat(addr); addr += 4;
-        dataBuffer[i].spO2 = EEPROM_readFloat(addr); addr += 4;
-        dataBuffer[i].batteryLevel = EEPROM_readFloat(addr); addr += 4;
-        dataBuffer[i].timestamp = millis();
-    }
-    
-    printf("Loaded %d data entries from EEPROM\n", dataBufferCount);
-}
-
-void clearData() {
-    printf("Clearing data...\n");
-    dataBufferCount = 0;
-    EEPROM_write(EEPROM_DATA_START, 0);
-    EEPROM_commit();
-    
-    Adafruit_ILI9341_fillRect(&tft, 50, 100, 220, 60, COLOR_RED);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-    Adafruit_ILI9341_setTextSize(&tft, 2);
-    Adafruit_ILI9341_setCursor(&tft, 90, 120);
-    Adafruit_ILI9341_println(&tft, "Data Cleared!");
-    
-    delay(2000);
-    showSettingsScreen();
 }
 
 // ==================== ALERT SYSTEM ====================
@@ -671,7 +710,7 @@ void checkAlerts() {
     if (currentVitals.isFingerDetected && currentVitals.heartRate > 0) {
         if (currentVitals.heartRate < alertThresholds.heartRateMin || 
             currentVitals.heartRate > alertThresholds.heartRateMax) {
-            snprintf(message, sizeof(message), "Heart rate: %d BPM", (int)currentVitals.heartRate);
+            snprintf(message, sizeof(message), "HR: %d BPM", (int)currentVitals.heartRate);
             int level = (currentVitals.heartRate < 50 || currentVitals.heartRate > 120) ? 
                         ALERT_LEVEL_CRITICAL : ALERT_LEVEL_WARNING;
             triggerAlert(level, message);
@@ -729,10 +768,11 @@ void triggerAlert(int level, const char* message) {
     playAlertSound(level);
     showAlert(message, level);
     
-    printf("ALERT [%s]: %s\n", 
-           level == ALERT_LEVEL_CRITICAL ? "CRITICAL" : 
-           level == ALERT_LEVEL_WARNING ? "WARNING" : "INFO", 
-           message);
+    Serial.print("ALERT [");
+    Serial.print(level == ALERT_LEVEL_CRITICAL ? "CRITICAL" : 
+                level == ALERT_LEVEL_WARNING ? "WARNING" : "INFO");
+    Serial.print("]: ");
+    Serial.println(message);
 }
 
 void playAlertSound(int level) {
@@ -747,6 +787,10 @@ void playAlertSound(int level) {
         case ALERT_LEVEL_WARNING:
             beepCount = 2;
             beepDuration = 300;
+            break;
+        default:
+            beepCount = 1;
+            beepDuration = 200;
             break;
     }
     
@@ -767,17 +811,20 @@ void showAlert(const char* message, int level) {
         case ALERT_LEVEL_WARNING:
             alertColor = COLOR_ORANGE;
             break;
+        default:
+            alertColor = COLOR_YELLOW;
+            break;
     }
     
-    Adafruit_ILI9341_fillRect(&tft, 0, 30, 320, 25, alertColor);
-    Adafruit_ILI9341_setTextColor(&tft, COLOR_BLACK);
-    Adafruit_ILI9341_setTextSize(&tft, 1);
-    Adafruit_ILI9341_setCursor(&tft, 5, 38);
-    Adafruit_ILI9341_println(&tft, message);
+    tft.fillRect(0, 30, 240, 25, alertColor);
+    tft.setTextColor(COLOR_BLACK);
+    tft.setTextSize(1);
+    tft.setCursor(5, 38);
+    tft.println(message);
     
     static unsigned long alertDisplayTime = millis();
     if (millis() - alertDisplayTime > 5000) {
-        Adafruit_ILI9341_fillRect(&tft, 0, 30, 320, 25, COLOR_BLACK);
+        tft.fillRect(0, 30, 240, 25, COLOR_BLACK);
         alertDisplayTime = millis();
     }
 }
@@ -796,40 +843,34 @@ void removeOldAlerts() {
 
 // ==================== SETTINGS MANAGEMENT ====================
 void loadSettings() {
-    alertThresholds.heartRateMin = EEPROM_readFloat(EEPROM_HR_MIN);
-    if (alertThresholds.heartRateMin < 1) alertThresholds.heartRateMin = 60.0;
-    alertThresholds.heartRateMax = EEPROM_readFloat(EEPROM_HR_MAX);
-    if (alertThresholds.heartRateMax < 1) alertThresholds.heartRateMax = 100.0;
-    alertThresholds.spO2Min = EEPROM_readFloat(EEPROM_SPO2_MIN);
-    if (alertThresholds.spO2Min < 1) alertThresholds.spO2Min = 95.0;
-    alertThresholds.batteryMin = EEPROM_readFloat(EEPROM_BAT_MIN);
-    if (alertThresholds.batteryMin < 1) alertThresholds.batteryMin = 20.0;
-    alertThresholds.enabled = EEPROM_read(EEPROM_ALERTS_EN);
-    screenBrightness = EEPROM_read(EEPROM_BRIGHTNESS);
-    if (screenBrightness < 1) screenBrightness = 128;
+    // Default settings
+    alertThresholds.heartRateMin = 60.0f;
+    alertThresholds.heartRateMax = 100.0f;
+    alertThresholds.spO2Min = 95.0f;
+    alertThresholds.batteryMin = 20.0f;
+    alertThresholds.enabled = true;
+    screenBrightness = 128;
     
-    printf("Settings loaded from EEPROM\n");
+    Serial.println("Loaded default settings");
 }
 
 void saveSettings() {
-    EEPROM_writeFloat(EEPROM_HR_MIN, alertThresholds.heartRateMin);
-    EEPROM_writeFloat(EEPROM_HR_MAX, alertThresholds.heartRateMax);
-    EEPROM_writeFloat(EEPROM_SPO2_MIN, alertThresholds.spO2Min);
-    EEPROM_writeFloat(EEPROM_BAT_MIN, alertThresholds.batteryMin);
-    EEPROM_write(EEPROM_ALERTS_EN, alertThresholds.enabled);
-    EEPROM_write(EEPROM_BRIGHTNESS, screenBrightness);
-    EEPROM_commit();
-    
-    printf("Settings saved to EEPROM\n");
+    Serial.println("Settings saved");
 }
 
 // ==================== UTILITY FUNCTIONS ====================
 void updateDisplay() {
     if (!displayOn) return;
     
-    if (currentScreen == SCREEN_TYPE_MAIN) {
-        updateVitalSigns();
-        drawStatusBar();
+    switch (currentScreen) {
+        case SCREEN_TYPE_MAIN:
+            updateVitalSigns();
+            drawWaveform();
+            drawStatusBar();
+            break;
+        case SCREEN_TYPE_SETTINGS:
+        case SCREEN_TYPE_HISTORY:
+            break;
     }
 }
 
@@ -846,55 +887,78 @@ void formatTime(unsigned long timestamp, char* output) {
 }
 
 void printSystemInfo() {
-    printf("\n=== System Information ===\n");
-    printf("Firmware Version: %s\n", FIRMWARE_VERSION);
-    printf("Device Name: %s\n", DEVICE_NAME);
-    printf("Free SRAM: %d bytes\n", freeMemory());
-    printf("Sensor Status: %s\n", MAX30105_begin(&particleSensor) ? "Connected" : "Disconnected");
-    printf("Display Status: Active\n");
-    printf("Data Buffer: %d/%d entries\n", dataBufferCount, DATA_BUFFER_SIZE);
-    printf("Active Alerts: %d\n", activeAlertsCount);
-    printf("========================\n");
+    Serial.println("\n=== System Information ===");
+    Serial.print("Firmware Version: ");
+    Serial.println(FIRMWARE_VERSION);
+    Serial.print("Device Name: ");
+    Serial.println(DEVICE_NAME);
+    Serial.print("Free RAM: ");
+    Serial.println(freeMemory());
+    
+    Serial.print("Sensor Status: ");
+    Serial.println(particleSensor.begin() ? "Connected" : "Disconnected");
+    Serial.print("Display Status: Active\n");
+    Serial.print("Touch Status: ");
+    Serial.println(ts.begin() ? "Active" : "Inactive");
+    Serial.print("Data Buffer: ");
+    Serial.print(dataBufferCount);
+    Serial.print("/");
+    Serial.print(DATA_BUFFER_SIZE);
+    Serial.println(" entries");
+    Serial.print("Active Alerts: ");
+    Serial.println(activeAlertsCount);
+    Serial.println("========================");
 }
 
 void performSelfTest() {
-    printf("Performing system self-test...\n");
+    Serial.println("Performing system self-test...");
     
     bool testsPassed = true;
     
-    printf("Testing display... ");
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_RED);
+    Serial.print("Testing display... ");
+    tft.fillScreen(COLOR_RED);
     delay(500);
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_GREEN);
+    tft.fillScreen(COLOR_GREEN);
     delay(500);
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLUE);
+    tft.fillScreen(COLOR_BLUE);
     delay(500);
-    Adafruit_ILI9341_fillScreen(&tft, COLOR_BLACK);
-    printf("OK\n");
+    tft.fillScreen(COLOR_BLACK);
+    Serial.println("OK");
     
-    printf("Testing MAX30102 sensor... ");
-    if (MAX30105_begin(&particleSensor)) {
-        printf("OK\n");
+    Serial.print("Testing touch controller... ");
+    if (ts.begin()) {
+        Serial.println("OK");
     } else {
-        printf("FAILED\n");
+        Serial.println("FAILED");
         testsPassed = false;
     }
     
-    printf("Testing buzzer... ");
+    Serial.print("Testing MAX30102 sensor... ");
+    if (particleSensor.begin()) {
+        Serial.println("OK");
+    } else {
+        Serial.println("FAILED");
+        testsPassed = false;
+    }
+    
+    Serial.print("Testing buzzer... ");
     digitalWrite(BUZZER_PIN, HIGH);
     delay(200);
     digitalWrite(BUZZER_PIN, LOW);
-    printf("OK\n");
+    Serial.println("OK");
     
-    printf("Testing battery monitor... ");
+    Serial.print("Testing battery monitor... ");
     float batteryLevel = readBatteryLevel();
     if (batteryLevel >= 0 && batteryLevel <= 100) {
-        printf("OK (%.1f%%)\n", batteryLevel);
+        Serial.print("OK (");
+        Serial.print(batteryLevel);
+        Serial.println("%)");
     } else {
-        printf("WARNING - Unusual reading\n");
+        Serial.println("WARNING - Unusual reading");
     }
     
-    printf("Self-test %s\n", testsPassed ? "PASSED" : "FAILED");
+    Serial.print("Self-test ");
+    Serial.println(testsPassed ? "PASSED" : "FAILED");
     
     if (testsPassed) {
         for (int i = 0; i < 3; i++) {
@@ -914,81 +978,117 @@ void performSelfTest() {
 }
 
 void handleSerialCommands() {
-    char command[32];
-    if (Serial_available()) {
-        Serial_readStringUntil('\n', command, sizeof(command));
-        for (int i = 0; command[i]; i++) {
-            if (command[i] >= 'A' && command[i] <= 'Z') {
-                command[i] += 32; // Convert to lowercase
-            }
-        }
-        while (command[strlen(command) - 1] == '\r' || command[strlen(command) - 1] == '\n') {
-            command[strlen(command) - 1] = '\0';
-        }
+    if (Serial.available()) {
+        String command = Serial.readStringUntil('\n');
+        command.toLowerCase();
+        command.trim();
         
-        if (strcmp(command, "help") == 0) {
-            printf("\n=== Available Commands ===\n");
-            printf("help - Show this help message\n");
-            printf("info - Show system information\n");
-            printf("test - Perform self-test\n");
-            printf("data - Show current readings\n");
-            printf("export - Export data to serial\n");
-            printf("clear - Clear data buffer\n");
-            printf("alerts - Show active alerts\n");
-            printf("========================\n");
+        if (command == "help") {
+            Serial.println("\n=== Available Commands ===");
+            Serial.println("help - Show this help message");
+            Serial.println("info - Show system information");
+            Serial.println("test - Perform self-test");
+            Serial.println("reset - Reset system");
+            Serial.println("data - Show current readings");
+            Serial.println("export - Export data to serial");
+            Serial.println("clear - Clear data buffer");
+            Serial.println("alerts - Show active alerts");
+            Serial.println("========================");
         }
-        else if (strcmp(command, "info") == 0) {
+        else if (command == "info") {
             printSystemInfo();
         }
-        else if (strcmp(command, "test") == 0) {
+        else if (command == "test") {
             performSelfTest();
         }
-        else if (strcmp(command, "data") == 0) {
-            printf("Heart Rate: %.1f BPM\n", currentVitals.heartRate);
-            printf("SpO2: %.1f%%\n", currentVitals.spO2);
-            printf("Battery: %.1f%%\n", currentVitals.batteryLevel);
-            printf("Finger Detected: %s\n", currentVitals.isFingerDetected ? "Yes" : "No");
+        else if (command == "reset") {
+            Serial.println("Resetting system...");
+            asm volatile ("  jmp 0");  
         }
-        else if (strcmp(command, "export") == 0) {
-            printf("Timestamp,HeartRate,SpO2,BatteryLevel\n");
+        else if (command == "data") {
+            Serial.print("Heart Rate: ");
+            Serial.print(currentVitals.heartRate);
+            Serial.println(" BPM");
+            Serial.print("SpO2: ");
+            Serial.print(currentVitals.spO2);
+            Serial.println("%");
+            Serial.print("Battery: ");
+            Serial.print(currentVitals.batteryLevel);
+            Serial.println("%");
+            Serial.print("Finger Detected: ");
+            Serial.println(currentVitals.isFingerDetected ? "Yes" : "No");
+        }
+        else if (command == "export") {
+            Serial.println("Timestamp,HeartRate,SpO2,BatteryLevel");
             for (int i = 0; i < dataBufferCount; i++) {
-                printf("%lu,%.1f,%.1f,%.1f\n", 
-                       dataBuffer[i].timestamp, dataBuffer[i].heartRate,
-                       dataBuffer[i].spO2, dataBuffer[i].batteryLevel);
+                Serial.print(dataBuffer[i].timestamp);
+                Serial.print(",");
+                Serial.print(dataBuffer[i].heartRate);
+                Serial.print(",");
+                Serial.print(dataBuffer[i].spO2);
+                Serial.print(",");
+                Serial.println(dataBuffer[i].batteryLevel);
             }
         }
-        else if (strcmp(command, "clear") == 0) {
-            clearData();
-            printf("Data buffer cleared\n");
+        else if (command == "clear") {
+            dataBufferCount = 0;
+            Serial.println("Data buffer cleared");
         }
-        else if (strcmp(command, "alerts") == 0) {
-            printf("Active Alerts: %d\n", activeAlertsCount);
+        else if (command == "alerts") {
+            Serial.print("Active Alerts: ");
+            Serial.println(activeAlertsCount);
             for (int i = 0; i < activeAlertsCount; i++) {
-                printf("- %s: %s\n", 
-                       activeAlerts[i].level == ALERT_LEVEL_CRITICAL ? "CRITICAL" :
-                       activeAlerts[i].level == ALERT_LEVEL_WARNING ? "WARNING" : "INFO",
-                       activeAlerts[i].message);
+                Serial.print("- ");
+                Serial.print(activeAlerts[i].level == ALERT_LEVEL_CRITICAL ? "CRITICAL" :
+                            activeAlerts[i].level == ALERT_LEVEL_WARNING ? "WARNING" : "INFO");
+                Serial.print(": ");
+                Serial.println(activeAlerts[i].message);
             }
         }
         else {
-            printf("Unknown command. Type 'help' for available commands.\n");
+            Serial.println("Unknown command. Type 'help' for available commands.");
         }
     }
 }
 
-void watchdogFeed() {
-    yield();
+void exportData() {
+    Serial.println("Exporting data...");
+    
+    tft.fillRect(50, 100, 140, 60, COLOR_GREEN);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(60, 120);
+    tft.println("Data Exported!");
+    
+    delay(2000);
+    showSettingsScreen();
+}
+
+void clearData() {
+    Serial.println("Clearing data...");
+    dataBufferCount = 0;
+    
+    tft.fillRect(50, 100, 140, 60, COLOR_RED);
+    tft.setTextColor(COLOR_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(70, 120);
+    tft.println("Data Cleared!");
+    
+    delay(2000);
+    showSettingsScreen();
 }
 
 void handleLowPowerMode() {
     if (currentVitals.batteryLevel < 10) {
-        printf("Entering low power mode...\n");
+        Serial.println("Entering low power mode...");
+        
         screenBrightness = 50;
-        Adafruit_ILI9341_fillRect(&tft, 0, 0, 320, 20, COLOR_RED);
-        Adafruit_ILI9341_setTextColor(&tft, COLOR_WHITE);
-        Adafruit_ILI9341_setTextSize(&tft, 1);
-        Adafruit_ILI9341_setCursor(&tft, 5, 5);
-        Adafruit_ILI9341_println(&tft, "LOW POWER MODE");
+        
+        tft.fillRect(0, 0, 240, 20, COLOR_RED);
+        tft.setTextColor(COLOR_WHITE);
+        tft.setTextSize(1);
+        tft.setCursor(5, 5);
+        tft.println("LOW POWER MODE");
     }
 }
 
@@ -999,19 +1099,28 @@ void checkMemoryUsage() {
         lastMemCheck = millis();
         
         int freeMem = freeMemory();
-        if (freeMem < 200) {
-            printf("WARNING: Low memory - %d bytes free\n", freeMem);
-            if (dataBufferCount > 10) {
-                memmove(dataBuffer, dataBuffer + 5, (dataBufferCount - 5) * sizeof(VitalSigns));
-                dataBufferCount -= 5;
-                printf("Cleaned up data buffer to free memory\n");
+        if (freeMem < 500) {
+            Serial.print("WARNING: Low memory - ");
+            Serial.print(freeMem);
+            Serial.println(" bytes free");
+            
+            if (dataBufferCount > 25) {
+                memmove(dataBuffer, dataBuffer + 10, (dataBufferCount - 10) * sizeof(VitalSigns));
+                dataBufferCount -= 10;
+                Serial.println("Cleaned up data buffer to free memory");
+            }
+            
+            if (alertHistoryCount > 10) {
+                memmove(alertHistory, alertHistory + 5, (alertHistoryCount - 5) * sizeof(Alert));
+                alertHistoryCount -= 5;
+                Serial.println("Cleaned up alert history to free memory");
             }
         }
     }
 }
 
 void initializeSystem() {
-    printf("Reinitializing system...\n");
+    Serial.println("Reinitializing system...");
     
     currentState = SYSTEM_STATE_INITIALIZING;
     currentScreen = SCREEN_TYPE_MAIN;
@@ -1025,16 +1134,15 @@ void initializeSystem() {
     lastDataLog = 0;
     lastAlertCheck = 0;
     
-    loadDataFromEEPROM();
-    
     currentState = SYSTEM_STATE_RUNNING;
     showMainScreen();
     
-    printf("System reinitialization complete\n");
+    Serial.println("System reinitialization complete");
 }
 
 void handleSystemError(const char* errorMessage) {
-    printf("SYSTEM ERROR: %s\n", errorMessage);
+    Serial.print("SYSTEM ERROR: ");
+    Serial.println(errorMessage);
     
     currentState = SYSTEM_STATE_ERROR;
     
@@ -1049,39 +1157,47 @@ void handleSystemError(const char* errorMessage) {
     
     delay(5000);
     
-    printf("Attempting system recovery...\n");
+    Serial.println("Attempting system recovery...");
     initializeSystem();
 }
 
-// Helper function to estimate free SRAM
+// Helper function to check free memory
+#ifdef __arm__
+// should use uinstd.h to define sbrk but Due causes a conflict
+extern "C" char* sbrk(int incr);
+#else  // __ARM__
+extern char *__brkval;
+#endif  // __arm__
+
 int freeMemory() {
-    extern int __heap_start, *__brkval;
-    int v;
-    return (int) &v - (__brkval == 0 ? (int) &__heap_start : (int) __brkval);
+  char top;
+#ifdef __arm__
+  return &top - reinterpret_cast<char*>(sbrk(0));
+#elif defined(CORE_TEENSY) || (ARDUINO > 103 && ARDUINO != 151)
+  return &top - __brkval;
+#else  // __arm__
+  return __brkval ? &top - __brkval : &top - __malloc_heap_start;
+#endif  // __arm__
 }
 
 /*
  * USAGE INSTRUCTIONS:
  * 
  * 1. Hardware Setup:
- *    - Connect MAX30102 sensor to I2C (SDA=A4, SCL=A5)
- *    - Connect ILI9341 display to SPI (CS=10, DC=9, MOSI=11, CLK=13, RST=8)
- *    - Connect buzzer to pin 7
+ *    - Connect MAX30102 sensor to I2C pins (SDA=A4, SCL=A5)
+ *    - Connect ILI9341 display to SPI pins as defined above
+ *    - Connect XPT2046 touch controller
  *    - Connect battery monitor to A0
- *    - Connect push buttons to pins 2 and 3 (with pull-up resistors)
+ *    - Connect buzzer to pin 6
  * 
  * 2. Operation:
  *    - Place finger on MAX30102 sensor
- *    - View heart rate and SpO2 on display
- *    - Use Button 1 to switch to Settings or return to Main
- *    - Use Button 2 to switch to History from Main
+ *    - View real-time heart rate and SpO2 on display
+ *    - Use touch interface to navigate menus
+ *    - Access serial monitor at 115200 baud for data
  * 
  * 3. Serial Commands:
- *    - Connect at 9600 baud
  *    - Type "help" for available commands
- * 
- * 4. Data Export:
- *    - Use serial command "export" to retrieve data
  * 
  * SAFETY WARNING:
  * This device is for educational purposes only.
